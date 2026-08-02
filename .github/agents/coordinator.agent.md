@@ -26,7 +26,7 @@ When a human pings you with a JIRA ticket number:
      - **Regression selection** — Phase 2 only. Delegate to `@regression`.
    - **Post a JIRA comment with the classification and a one-sentence justification** (e.g., *"Classification: test-creation — description requests new coverage for the sector filter; no failing-build references."*). This comment is the transparency mechanism: humans can intervene if the inference is wrong before downstream agents proceed. Default-proceed after posting; do not wait for confirmation unless ambiguity (next bullet) warrants it.
    - **If the ticket is genuinely ambiguous** (e.g., contains both new-coverage requests and failure-investigation language, or AC is too thin to tell), post the comment with your best guess and ask the human for explicit confirmation before delegating. Do not guess silently when uncertain.
-5. Write the active scope file `.qe-active-scope.json` at the repo root (use your `edit` tool; the file is gitignored). Derive it in two steps: the ticket's project (step 3) gives the candidate tree; the ticket's domain (ui / api / db / mixed — from your classification) filters that tree down to only the directories this ticket needs: test assets always, plus the app surface the tests exercise. Application internals irrelevant to the domain (e.g. `db/`, `mock-api/` for a UI ticket) are excluded. The file contains exactly two fields and nothing else:
+5. Write the active scope file `.qe-active-scope.json` at the repo root (use your `edit` tool; the file is gitignored). Derive it in two steps: the ticket's project (step 3) gives the candidate tree; the ticket's domain (ui / api / db / mixed — from your classification) filters that tree down to only the directories this ticket needs: test assets always, plus the app surface the tests exercise. Application internals irrelevant to the domain (e.g. `db/`, `mock-api/` for a UI ticket) are excluded. Never write `.`, `/`, or the repo root as an allowed path — always name concrete directories; a root entry is rejected by the hook as malformed. The file contains exactly two fields and nothing else:
 
    ```json
    {"ticket": "SHOP-4", "allowed_paths": ["features", "mock-ui"]}
@@ -123,6 +123,7 @@ You may be invoked on a ticket where your previous conversation has been lost (I
 1. Read the JIRA ticket including all agent and human comments.
 2. Read the linked PR (if any) including its branch state and review comments.
 3. Infer the current phase from the comment history. Proceed from the appropriate phase.
+4. Rewrite `.qe-active-scope.json` for THIS ticket before any delegation, even on resume — the file on disk may be missing (fresh machine) or belong to a previously dispatched ticket. The scope file is per-ticket and superseded on every dispatch.
 
 Never assume warm-chat state. The ground truth between invocations is JIRA + PR.
 

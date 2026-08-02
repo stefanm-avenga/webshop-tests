@@ -51,19 +51,42 @@ def _is_path_key(key):
 
 
 def _extract_paths(node, out=None):
-    """Collect path-like string values recursively from the tool input."""
+    """Collect path-like string values recursively from the tool input.
+
+    A path-heuristic key may hold either a single string (filePath) or a
+    list of strings (filePaths) — both are collected. Anything else under a
+    matching key (or any value under a non-matching key) is still recursed
+    into, so nested payloads keep working.
+    """
     if out is None:
         out = []
     if isinstance(node, dict):
         for key, value in node.items():
             if _is_path_key(key) and isinstance(value, str) and value.strip():
                 out.append(value)
+            elif _is_path_key(key) and isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str) and item.strip():
+                        out.append(item)
+                    else:
+                        _extract_paths(item, out)
             else:
                 _extract_paths(value, out)
     elif isinstance(node, list):
         for item in node:
             _extract_paths(item, out)
     return out
+
+
+# Entries that would, after normalisation, refer to the repo root itself.
+# ["."] as allowed_paths silently disables the hook (everything normalises
+# under "."), so the scope-file validation rejects it as malformed.
+_ROOT_EQUIVALENT = {"", ".", "/", "./"}
+
+
+def _is_root_equivalent(entry):
+    normalized = str(entry).strip().replace("\\", "/")
+    return normalized in _ROOT_EQUIVALENT
 
 
 def _repo_relative(path_str):
@@ -104,11 +127,16 @@ def _repo_relative(path_str):
 
 
 def _in_scope(rel, allowed):
+    # No allow-all branch here by design: a root-equivalent entry is
+    # rejected as malformed when the scope file is loaded (see
+    # _is_root_equivalent), so every entry reaching this function should
+    # already name a concrete subtree. A stray empty-after-normalisation
+    # entry simply matches nothing, rather than granting blanket access.
     rel_l = rel.lower()
     for entry in allowed:
         entry = str(entry).strip().strip("/").replace("\\", "/").lower()
-        if not entry or entry == ".":
-            return True
+        if not entry:
+            continue
         if rel_l == entry or rel_l.startswith(entry + "/"):
             return True
     return False
@@ -116,15 +144,36 @@ def _in_scope(rel, allowed):
 
 def main() -> int:
     raw = sys.stdin.read()
+    if not raw.strip():
+        # Empty stdin is a harness quirk we've observed, not a hostile or
+        # malformed payload — fail open so it doesn't brick unrelated tool
+        # calls that never carried a body to begin with.
+        _emit_allow()
+        return 0
     try:
-        payload = json.loads(raw) if raw.strip() else {}
+        payload = json.loads(raw)
     except json.JSONDecodeError:
-        payload = {}
+        # Non-empty but unparseable: unlike the empty-stdin case, this is
+        # data we can't trust, so fail closed.
+        _emit_deny(
+            "scope-enforcement hook received an unreadable payload; denying "
+            "by default. Retry the action; if this persists, report to "
+            "@coordinator.")
+        return 0
+
+    tool_name = payload.get("tool_name") or ""
+    if tool_name.startswith("mcp_"):
+        # MCP tools are remote API calls, not filesystem access — their
+        # path-shaped argument names (e.g. GitHub's `path`) name a location
+        # on the remote service, not a local file, so scope doesn't apply.
+        _emit_allow()
+        return 0
+
     tool_input = payload.get("tool_input") or {}
 
     targets = _extract_paths(tool_input)
     if not targets:
-        _emit_allow()  # search/MCP/terminal/delegation: nothing to judge
+        _emit_allow()  # search/terminal/delegation: nothing to judge
         return 0
 
     if not SCOPE_FILE.exists():
@@ -139,11 +188,15 @@ def main() -> int:
         allowed = scope["allowed_paths"]
         if not isinstance(allowed, list) or not allowed:
             raise ValueError("allowed_paths must be a non-empty list")
+        if any(_is_root_equivalent(entry) for entry in allowed):
+            raise ValueError(
+                "allowed_paths must not contain a root-equivalent entry")
     except Exception:
         _emit_deny(
             ".qe-active-scope.json exists but is malformed (need: ticket, "
-            "allowed_paths list). @coordinator must rewrite it before "
-            "specialist file access can proceed.")
+            "allowed_paths list with no root-equivalent entries). "
+            "@coordinator must rewrite it before specialist file access can "
+            "proceed.")
         return 0
 
     baseline_lower = {b.lower() for b in BASELINE_ALLOWED}
@@ -157,7 +210,7 @@ def main() -> int:
                 f"the active scope for ticket {ticket} (allowed: "
                 f"{', '.join(str(a) for a in allowed)}). Do not retry or work "
                 "around this — if you believe you need this file, report the "
-                "path to @coordinator and stop.")
+                "path to @coordinator.")
             return 0
     _emit_allow()
     return 0

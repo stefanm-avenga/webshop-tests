@@ -1,0 +1,17 @@
+id: webshop-no-real-payment-data
+description_path: description.md
+semgrep_path: semgrep.yaml
+severity: error
+languages: [python]
+paths:
+  include: ["features/**/*.py"]
+  exclude: []
+metadata:
+  owner: webshop-qe-team
+  state: enforced
+  created: 2026-07-24
+  last_reviewed: 2026-07-24
+  review_cadence: 180d
+  related_policy: PCI-TESTDATA-001
+  supersedes: null
+  superseded_by: null

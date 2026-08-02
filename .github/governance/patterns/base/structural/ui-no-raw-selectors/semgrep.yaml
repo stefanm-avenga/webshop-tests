@@ -1,0 +1,9 @@
+rules:
+  - id: ui-no-raw-selectors
+    languages: [python]
+    patterns:
+      - pattern: page.locator($X)
+    message: |
+      UI step definitions must use page objects, not raw selectors.
+      See: governance/patterns/base/structural/ui-no-raw-selectors/description.md
+    severity: ERROR

@@ -1,0 +1,20 @@
+# Waiver registry — path-scoped, long-lived overrides for governance rules.
+#
+# Each waiver entry:
+#   - rule:     ID of the governance rule being waived
+#   - paths:    glob list of paths the waiver applies to
+#   - reason:   free-text justification, ideally with a tracking ticket
+#   - approver: GitHub team or handle that signed off
+#   - expires:  ISO date — the waiver is invalid after this date
+#
+# Schema, override semantics, and lifecycle are enforced by the governance
+# meta-validator (.github/scripts/validate_governance.py).
+#
+# validate-governance.yml fails the build if any entry has expires < today.
+# Inline `nosemgrep` annotations on critical-severity rules are NOT permitted —
+# critical rules can only be overridden via this registry plus the
+# `governance-override-approved` PR label.
+#
+# Baseline: no waivers. Entries are added via PR to platform-team CODEOWNERS.
+
+waivers: []

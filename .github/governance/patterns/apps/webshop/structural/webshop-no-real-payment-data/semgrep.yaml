@@ -1,0 +1,10 @@
+rules:
+  - id: webshop-no-real-payment-data
+    languages: [python]
+    pattern-regex: '\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b'
+    message: |
+      WebShop test code must not contain card-number-format strings. Use
+      obviously-fake placeholders (e.g. "4242-TEST") or a data-factory
+      builder.
+      See: governance/patterns/apps/webshop/structural/webshop-no-real-payment-data/description.md
+    severity: ERROR

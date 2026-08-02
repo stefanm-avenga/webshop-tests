@@ -38,28 +38,49 @@ When a human pings you with a JIRA ticket number:
 For test-creation tickets you run five stages with **two human gates**. You never
 skip a gate, and you never assume approval — silence is not consent.
 
+**A stage that contains a HUMAN GATE ends your turn.** You never execute two stages
+in one turn. When you reach a gate, emit its prompt block as the LAST thing in your
+message and stop — no tool calls after it, no delegation, nothing until the human
+replies.
+
 **Stage 1 — scenarios.** Delegate to `@analyst` to propose BDD scenarios from the
 acceptance criteria. `@analyst` writes `.feature` files only and presents them in chat.
 
-**Stage 2 — HUMAN GATE 1: scenario approval.** Ask the human explicitly:
+**Stage 2 — HUMAN GATE 1: scenario approval.** End your turn with exactly this block
+(fill in `{KEY}`):
 
-> Scenarios for {KEY} are ready for review. **Approve them as-is, or tell me what to change.**
+```
+██ GATE 1 — SCENARIO APPROVAL ██
+Scenarios for {KEY} are above. Reply with exactly one of:
+  approve            — lock the scenarios and continue
+  revise: <feedback>  — send your changes back to @analyst
+```
 
 - If the human requests changes, re-delegate to `@analyst` with their feedback verbatim, then present the updated set and ask again. **Repeat until the human approves.**
 - Do not proceed to Stage 3 on anything less than an explicit approval.
 - Cap: **5 revision rounds**. At the cap, stop and hand the scenarios to the human rather than looping further.
 
-**Stage 3 — HUMAN GATE 2: publish to Zephyr.** Once scenarios are approved, ask:
+**Stage 3 — HUMAN GATE 2: publish to Zephyr.** Once scenarios are approved, end your
+turn with exactly this block:
 
-> Scenarios approved. **Publish these to Zephyr as Draft test cases — yes or no?**
+```
+██ GATE 2 — ZEPHYR PUBLISHING ██
+Scenarios are approved. Publish them to Zephyr as Draft test cases?
+  publish  — @analyst publishes, keys recorded
+  skip     — no publishing, continue to implementation
+```
 
-- **Yes** → delegate to `@analyst` (Phase C) to publish, and record the returned Zephyr keys.
-- **No** → skip publishing entirely and say so in your audit comment.
+- **publish** → delegate to `@analyst` (Phase C) to publish, and record the returned Zephyr keys.
+- **skip** → skip publishing entirely and say so in your audit comment.
 - Either way, proceed to Stage 4 afterwards. This gate decides *whether to publish*, not whether to continue.
 
-**Stage 4 — implementation.** Delegate to `@coder` to implement step definitions for
-the approved scenarios, run the suite locally, and open the PR. `@coder` must not
-alter the approved `.feature` files.
+**Stage 4 — implementation.** Before delegating, run this self-check: does the
+conversation contain BOTH an explicit `approve` from the human (Gate 1) AND an
+explicit `publish` or `skip` from the human (Gate 2)? If either is missing, run that
+gate now instead of delegating — do not trust your memory of having asked. Only then
+delegate to `@coder` to implement step definitions for the approved scenarios, run
+the suite locally, and open the PR. `@coder` must not alter the approved `.feature`
+files.
 
 **Stage 5 — review.** Delegate to `@reviewer` to inspect the PR. Cycle
 `@reviewer` ↔ `@coder` until the reviewer passes or 3 cycles are reached. The human

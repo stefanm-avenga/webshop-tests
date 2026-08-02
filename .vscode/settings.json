@@ -1,0 +1,10 @@
+{
+  // Pin the project virtualenv so `behave` resolves in any new terminal.
+  // behave + playwright are installed ONLY in .venv (see requirements.txt);
+  // without this, an integrated terminal falls back to the system Python and
+  // `behave` is not found.
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": false
+}

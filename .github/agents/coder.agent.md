@@ -20,7 +20,7 @@ When `@coordinator` invokes you after scenario approval:
    - Step definitions alongside the existing step definitions
    - Where the repo has an abstraction layer (page objects, typed clients, data factories), extend it rather than duplicating logic in steps
    - Where it does not, write straightforward step definitions in the existing style — do not introduce a new layer
-5. Run the suite locally. For each failure: diagnose, fix, re-run. Up to **5 attempts** total across all failures in this cycle.
+5. Run the suite locally. The terminal shell is whatever the workspace uses — on Windows that is PowerShell: never emit POSIX paths (`/c/Users/...`) and never `cd`. Run from the workspace root: `.venv\Scripts\python -m behave <target>` (Windows) or `.venv/bin/python -m behave <target>` (Unix). For each failure: diagnose, fix, re-run. Up to **5 attempts** total across all failures in this cycle.
 6. If any test is still failing at the cap:
    - Mark those scenarios `@skip` with a comment explaining the failure
    - Push the partial work

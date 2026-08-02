@@ -7,3 +7,5 @@ see `.qe-agents.yaml` for what this repo consumes.
 - `features/` — Behave features + step definitions (Playwright under the hood)
 - `mock-ui/` — static WebShop pages the tests run against
 - Run tests: `pip install -r requirements.txt && playwright install chromium && behave`
+
+Run `HEADED=1 behave` to watch the browser during a test run.

@@ -1,10 +1,7 @@
 ---
 name: analyst
 description: Diagnoses test failures from Jenkins runs and classifies them as fixable or not.
-tools:
-  - github
-  - atlassian
-  - jenkins
+tools: ['read', 'search', 'com.atlassian/atlassian-mcp-server/*', 'github/*']
 model: ['Claude Opus 4.7', 'Claude Sonnet 4.6', 'GPT-5.2']
 ---
 

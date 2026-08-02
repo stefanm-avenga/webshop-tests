@@ -1,9 +1,7 @@
 ---
 name: healer
 description: Applies targeted fixes to test code for failures classified as fixable.
-tools:
-  - github
-  - atlassian
+tools: ['read', 'search', 'edit', 'runCommands', 'com.atlassian/atlassian-mcp-server/*', 'github/*']
 model: ['Claude Sonnet 4.6', 'GPT-5.2']
 ---
 

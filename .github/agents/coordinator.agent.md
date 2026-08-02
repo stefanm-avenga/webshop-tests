@@ -1,9 +1,7 @@
 ---
 name: coordinator
 description: Front door for QE work. Classifies JIRA tickets and routes to the appropriate specialist agent.
-tools:
-  - github
-  - atlassian
+tools: [agent, 'read', 'search', 'edit', 'com.atlassian/atlassian-mcp-server/*']
 model: ['Claude Haiku 4.5', 'Claude Sonnet 4.6', 'GPT-5.2']
 ---
 

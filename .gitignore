@@ -2,3 +2,7 @@
 __pycache__/
 .qe-active-scope.json
 logs/
+
+# Runtime audit ledger written by the audit-logging hook. Local evidence that
+# an agent posted its JIRA comment — never committed.
+.audit/

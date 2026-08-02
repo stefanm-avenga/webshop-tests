@@ -376,6 +376,28 @@ jobs:
             echo "✅ Generated stub: $RULE_ID.instructions.md (applyTo: $APPLY_TO)"
           done
 
+      # ── 9c. Sync hooks ─────────────────────────────────────────────
+      # Hooks are runtime ENFORCEMENT (not instruction): the agent runtime
+      # executes them and honours their allow/deny decisions. They land flat
+      # under .github/hooks/ — a `<name>.json` config plus a `<name>/` folder
+      # of verifier scripts — which is the layout the agent runtime expects.
+      # Iterate from the SOURCE side so the manifest records exactly what this
+      # run cp'd (same rule as every other sync step).
+      - name: Sync hooks
+        run: |
+          HOOKS_DIR="_central/hooks"
+          if [ -d "$HOOKS_DIR" ]; then
+            mkdir -p .github/hooks
+            cp -r "$HOOKS_DIR"/. .github/hooks/
+            find "$HOOKS_DIR" -type f | while read SRC; do
+              REL="${SRC#$HOOKS_DIR/}"
+              echo ".github/hooks/$REL" >> "$manifest_path"
+            done
+            echo "✅ Synced hooks"
+          else
+            echo "::warning::Hooks folder not found in central: $HOOKS_DIR"
+          fi
+
       # ── 10. Generate lockfile (α.b: from manifest, NOT disk walk) ──
       # The lockfile is the forensic ground-truth artifact of THIS sync run:
       # every entry must correspond to a file actually cp'd from central at
@@ -456,6 +478,18 @@ jobs:
             WAIVERS_SHA=$(sha256sum .github/governance/waivers.yaml | cut -c1-7)
             echo "waivers_sha: $WAIVERS_SHA" >> .qe-agents.lock
           fi
+
+          # Add hook entries from manifest (flat under .github/hooks/).
+          # Same hash-family as agents/instructions: one entry per file, so a
+          # hand-edited verifier is detectable against the lockfile.
+          echo "hooks:" >> .qe-agents.lock
+          grep -E '^\.github/hooks/' "$MANIFEST" | sort -u | while read FILE; do
+            [ -f "$FILE" ] || continue
+            RELPATH="${FILE#.github/hooks/}"
+            SHA=$(sha256sum "$FILE" | cut -c1-7)
+            echo "  - path: $RELPATH" >> .qe-agents.lock
+            echo "    sha: $SHA" >> .qe-agents.lock
+          done
 
           # Add overrides (declarations from config)
           echo "agent_overrides:" >> .qe-agents.lock

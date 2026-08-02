@@ -26,8 +26,15 @@ When a human pings you with a JIRA ticket number:
      - **Regression selection** — Phase 2 only. Delegate to `@regression`.
    - **Post a JIRA comment with the classification and a one-sentence justification** (e.g., *"Classification: test-creation — description requests new coverage for the sector filter; no failing-build references."*). This comment is the transparency mechanism: humans can intervene if the inference is wrong before downstream agents proceed. Default-proceed after posting; do not wait for confirmation unless ambiguity (next bullet) warrants it.
    - **If the ticket is genuinely ambiguous** (e.g., contains both new-coverage requests and failure-investigation language, or AC is too thin to tell), post the comment with your best guess and ask the human for explicit confirmation before delegating. Do not guess silently when uncertain.
-5. Log a JIRA comment in the audit-comment schema (see §3.1). The comment records classification, resolved scope, target agent, and a link back to your conversation turn.
-6. Delegate to the chosen agent. The delegation prompt always includes:
+5. Write the active scope file `.qe-active-scope.json` at the repo root (use your `edit` tool; the file is gitignored). Derive it in two steps: the ticket's project (step 3) gives the candidate tree; the ticket's domain (ui / api / db / mixed — from your classification) filters that tree down to only the directories this ticket needs: test assets always, plus the app surface the tests exercise. Application internals irrelevant to the domain (e.g. `db/`, `mock-api/` for a UI ticket) are excluded. The file contains exactly two fields and nothing else:
+
+   ```json
+   {"ticket": "SHOP-4", "allowed_paths": ["features", "mock-ui"]}
+   ```
+
+   A scope-enforcement hook attached to `@analyst`, `@coder`, and `@reviewer` denies them any file access outside `allowed_paths` — so a path you leave out is a path they cannot see.
+6. Log a JIRA comment in the audit-comment schema (see §3.1). The comment records classification, resolved scope, the ticket domain plus a one-sentence rationale for the `allowed_paths` you chose, target agent, and a link back to your conversation turn.
+7. Delegate to the chosen agent. The delegation prompt always includes:
    - Ticket key and resolved scope path(s)
    - The resolved scope key(s) (component or label) and which of the two it came from
    - A summary of the human's instruction
@@ -100,6 +107,14 @@ You enforce four cycle caps:
 - `@reviewer` ↔ `@healer`: 3 cycles. Same behaviour as above.
 
 When a human takes over after a cap is reached, the reviewer downgrades to **advisor** status. You may invoke `@reviewer` on human-authored code if the human requests it, but the reviewer's findings are non-blocking. CI rules remain blocking for all authors.
+
+## Scope expansion requests
+
+When a specialist reports a file access denied by the scope-enforcement hook:
+
+1. Re-read the ticket and judge whether the requested path is genuinely needed for it.
+2. If justified: rewrite `.qe-active-scope.json` with the path added to `allowed_paths`, post a JIRA comment recording the expansion and the reason, then re-delegate.
+3. If not justified: tell the agent to proceed without it. If you are unsure, hand the question to the human.
 
 ## State reconstruction
 

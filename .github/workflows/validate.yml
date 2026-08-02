@@ -1,0 +1,377 @@
+name: Validate synced QE agent & instruction files
+
+# Consumer-side validator for webshop-tests.
+#
+# Mirrors the producer-side validate-agents.yml on qe-agents-central, but
+# walks the consumer-side paths where the sync-qe-agents workflow lands files:
+#   .github/agents/*.agent.md
+#   .github/instructions/**/*.instructions.md
+#
+# Runs on every PR against main. Before the first sync, no synced files exist
+# and the workflow exits 0 trivially. After the first sync it gates sync PRs
+# and any hand-edits to synced files.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yq
+        uses: mikefarah/yq@master
+
+      - name: Validate agent files
+        run: |
+          ERRORS=0
+
+          shopt -s nullglob
+          for FILE in .github/agents/*.agent.md; do
+            echo "Checking $FILE..."
+
+            # Extract YAML frontmatter (between --- markers)
+            FRONTMATTER=$(sed -n '/^---$/,/^---$/p' "$FILE" | sed '1d;$d')
+
+            # Required fields
+            for FIELD in name description tools; do
+              if ! echo "$FRONTMATTER" | yq ".$FIELD" 2>/dev/null | grep -qv 'null'; then
+                echo "::error file=$FILE::Missing required field: $FIELD"
+                ERRORS=$((ERRORS + 1))
+              fi
+            done
+
+            # Tools must be a list
+            TOOLS_TYPE=$(echo "$FRONTMATTER" | yq '.tools | type' 2>/dev/null)
+            if [ "$TOOLS_TYPE" != "!!seq" ]; then
+              echo "::error file=$FILE::tools must be a list, got $TOOLS_TYPE"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          if [ $ERRORS -gt 0 ]; then
+            echo "::error::$ERRORS validation error(s) found"
+            exit 1
+          fi
+          echo "All agent files valid (or none present yet)"
+
+      - name: Validate instruction files
+        run: |
+          ERRORS=0
+
+          for FILE in $(find .github/instructions -name '*.instructions.md' 2>/dev/null); do
+            echo "Checking $FILE..."
+
+            # Check if file has frontmatter
+            if head -1 "$FILE" | grep -q '^---$'; then
+              FRONTMATTER=$(sed -n '/^---$/,/^---$/p' "$FILE" | sed '1d;$d')
+
+              # If applyTo is present, validate it's a string (glob pattern)
+              APPLY_TO=$(echo "$FRONTMATTER" | yq '.applyTo' 2>/dev/null)
+              if [ "$APPLY_TO" != "null" ] && [ -n "$APPLY_TO" ]; then
+                # Basic check: applyTo should contain a path-like pattern.
+                # Character class accepts: letters, slashes, stars (globs),
+                # braces + commas (brace-expansion like {features,steps}/**).
+                if ! echo "$APPLY_TO" | grep -qE '[a-zA-Z/\*{},]'; then
+                  echo "::error file=$FILE::applyTo pattern looks invalid: $APPLY_TO"
+                  ERRORS=$((ERRORS + 1))
+                fi
+              fi
+            fi
+          done
+
+          if [ $ERRORS -gt 0 ]; then
+            echo "::error::$ERRORS validation error(s) found"
+            exit 1
+          fi
+          echo "All instruction files valid (or none present yet)"
+
+      - name: Check naming conventions
+        run: |
+          ERRORS=0
+
+          shopt -s nullglob
+          # Agent files must end in .agent.md
+          for FILE in .github/agents/*; do
+            [ -f "$FILE" ] || continue
+            if [[ ! "$FILE" == *.agent.md ]]; then
+              echo "::error file=$FILE::Agent files must be named *.agent.md"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          # Instruction files must end in .instructions.md (allow copilot-instructions.md as the global file)
+          for FILE in $(find .github/instructions -name '*.md' ! -name 'copilot-instructions.md' 2>/dev/null); do
+            if [[ ! "$FILE" == *.instructions.md ]] && [[ ! "$FILE" == *.agent.md ]]; then
+              echo "::error file=$FILE::Instruction files must be named *.instructions.md"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          if [ $ERRORS -gt 0 ]; then
+            echo "::error::$ERRORS naming error(s) found"
+            exit 1
+          fi
+          echo "All naming conventions valid"
+
+      # ── Orphan-file detection (α.b fix, F-F4-2 companion check) ────
+      # An "orphan" is a file under sync-managed paths (.github/agents/,
+      # .github/instructions/, .github/governance/) that has no corresponding
+      # entry in .qe-agents.lock. Under the post-α.b sync workflow, the lockfile
+      # describes what THIS sync run cp'd from central; any file on disk under
+      # those paths that's NOT in the lockfile is either:
+      #   (a) carryover from a prior sync of central content that has since
+      #       been decommissioned at the current source_commit, OR
+      #   (b) consumer-side hand-edits (governance principle: "nothing custom
+      #       should exist; everything sync-managed flows through central").
+      # In both cases, the right operator action is a follow-up cleanup PR
+      # removing the orphans. This step fails the sync PR with an explicit
+      # orphan list so the operator can act with full context.
+      #
+      # Pre-first-sync state (no lockfile): this step skips trivially.
+      - name: Detect orphaned files
+        run: |
+          if [ ! -f .qe-agents.lock ]; then
+            echo "ℹ️  No .qe-agents.lock yet (pre-first-sync state); skipping orphan detection"
+            exit 0
+          fi
+
+          # Build the set of declared paths from lockfile
+          DECLARED=$(mktemp)
+          # Agents: name field → resolve to .github/agents/$NAME
+          yq -r '.agents[]?.name' .qe-agents.lock 2>/dev/null | while read NAME; do
+            [ -n "$NAME" ] && echo ".github/agents/$NAME"
+          done >> "$DECLARED"
+          # Instructions: path field → resolve to .github/instructions/$PATH
+          yq -r '.instructions[]?.path' .qe-agents.lock 2>/dev/null | while read P; do
+            [ -n "$P" ] && echo ".github/instructions/$P"
+          done >> "$DECLARED"
+          # Governance: rule field names a directory; every file beneath it is declared
+          yq -r '.governance[]?.rule' .qe-agents.lock 2>/dev/null | while read R; do
+            [ -n "$R" ] || continue
+            find ".github/governance/patterns/$R" -type f 2>/dev/null
+          done >> "$DECLARED"
+          # Waivers: declared implicitly when waivers_sha is present in lockfile
+          if yq -e '.waivers_sha' .qe-agents.lock >/dev/null 2>&1; then
+            echo ".github/governance/waivers.yaml" >> "$DECLARED"
+          fi
+          # copilot-instructions.md — declared implicitly when present on disk
+          # (not currently emitted to lockfile; treated as configuration-adjacent)
+          [ -f .github/copilot-instructions.md ] && echo ".github/copilot-instructions.md" >> "$DECLARED"
+
+          sort -u "$DECLARED" -o "$DECLARED"
+
+          # Walk sync-managed disk paths — every file under .github/agents/,
+          # .github/instructions/, .github/governance/ is a candidate.
+          DISK=$(mktemp)
+          find .github/agents .github/instructions .github/governance \
+            -type f 2>/dev/null > "$DISK"
+          [ -f .github/copilot-instructions.md ] && echo ".github/copilot-instructions.md" >> "$DISK"
+          sort -u "$DISK" -o "$DISK"
+
+          # Orphans = on disk, NOT in declared
+          ORPHANS=$(comm -23 "$DISK" "$DECLARED")
+
+          if [ -z "$ORPHANS" ]; then
+            echo "✅ No orphaned files — sync-managed disk paths are coherent with .qe-agents.lock"
+            exit 0
+          fi
+
+          ORPHAN_COUNT=$(echo "$ORPHANS" | wc -l)
+          echo "::error::$ORPHAN_COUNT orphaned file(s) detected under sync-managed paths"
+          echo ""
+          echo "The following files exist on disk but are NOT declared in .qe-agents.lock."
+          echo "They are likely one of:"
+          echo "  (a) Carryover from a prior sync — central content that has since been"
+          echo "      decommissioned at the current source_commit ($(yq -r '.source_commit' .qe-agents.lock 2>/dev/null | cut -c1-10)...)."
+          echo "  (b) Consumer-side hand-edits (not allowed — sync-managed paths must flow"
+          echo "      exclusively from central)."
+          echo ""
+          echo "Resolution: open a follow-up cleanup PR removing these files, then re-run"
+          echo "validate. If you believe central should still publish them, contact the"
+          echo "central maintainers before deleting."
+          echo ""
+          echo "Orphan list:"
+          echo "$ORPHANS" | while read F; do
+            echo "  - $F"
+          done
+          exit 1
+
+      # ── Content-hash verification (catches tampering with synced files) ────
+      # The orphan detector above catches unauthorized ADDITIONS. This step
+      # catches unauthorized MODIFICATIONS by comparing each synced file's
+      # current sha256 hash (first 7 chars) against the sha recorded in the
+      # lockfile at sync time. Any mismatch fails the PR with the exact file
+      # named.
+      #
+      # Pre-first-sync (no lockfile): skips trivially.
+      - name: Verify content hashes against lockfile
+        run: |
+          if [ ! -f .qe-agents.lock ]; then
+            echo "ℹ️  No .qe-agents.lock yet (pre-first-sync state); skipping content-hash verification"
+            exit 0
+          fi
+
+          ERRORS=0
+
+          # Agents
+          AGENT_COUNT=$(yq '.agents | length // 0' .qe-agents.lock)
+          if [ "$AGENT_COUNT" -gt 0 ]; then
+            for i in $(seq 0 $((AGENT_COUNT - 1))); do
+              NAME=$(yq -r ".agents[$i].name" .qe-agents.lock)
+              EXPECTED=$(yq -r ".agents[$i].sha" .qe-agents.lock)
+              FILE=".github/agents/$NAME"
+              if [ ! -f "$FILE" ]; then
+                echo "::error file=$FILE::Agent declared in lockfile but missing on disk"
+                ERRORS=$((ERRORS + 1))
+                continue
+              fi
+              ACTUAL=$(sha256sum "$FILE" | cut -c1-7)
+              if [ "$ACTUAL" != "$EXPECTED" ]; then
+                echo "::error file=$FILE::Content hash mismatch — lockfile says $EXPECTED, disk has $ACTUAL. File was modified after sync."
+                ERRORS=$((ERRORS + 1))
+              fi
+            done
+          fi
+
+          # Instructions
+          INSTR_COUNT=$(yq '.instructions | length // 0' .qe-agents.lock)
+          if [ "$INSTR_COUNT" -gt 0 ]; then
+            for i in $(seq 0 $((INSTR_COUNT - 1))); do
+              P=$(yq -r ".instructions[$i].path" .qe-agents.lock)
+              EXPECTED=$(yq -r ".instructions[$i].sha" .qe-agents.lock)
+              FILE=".github/instructions/$P"
+              if [ ! -f "$FILE" ]; then
+                echo "::error file=$FILE::Instruction declared in lockfile but missing on disk"
+                ERRORS=$((ERRORS + 1))
+                continue
+              fi
+              ACTUAL=$(sha256sum "$FILE" | cut -c1-7)
+              if [ "$ACTUAL" != "$EXPECTED" ]; then
+                echo "::error file=$FILE::Content hash mismatch — lockfile says $EXPECTED, disk has $ACTUAL. File was modified after sync."
+                ERRORS=$((ERRORS + 1))
+              fi
+            done
+          fi
+
+          # Governance — per-file hash-check (Option 3 schema).
+          # Mirrors agents[] / instructions[] iteration but two levels deep:
+          # governance[].files[] — same {path, sha} pair, same error template.
+          # Pre-Option-3 lockfiles have governance[].sha but no governance[].files —
+          # those skip cleanly via the FILES_COUNT==0 guard (no false positives
+          # during schema migration on the first post-update sync).
+          GOV_COUNT=$(yq '.governance | length // 0' .qe-agents.lock)
+          if [ "$GOV_COUNT" -gt 0 ]; then
+            for i in $(seq 0 $((GOV_COUNT - 1))); do
+              RULE=$(yq -r ".governance[$i].rule" .qe-agents.lock)
+              FILES_COUNT=$(yq ".governance[$i].files | length // 0" .qe-agents.lock)
+              if [ "$FILES_COUNT" -eq 0 ]; then
+                continue
+              fi
+              for j in $(seq 0 $((FILES_COUNT - 1))); do
+                P=$(yq -r ".governance[$i].files[$j].path" .qe-agents.lock)
+                EXPECTED=$(yq -r ".governance[$i].files[$j].sha" .qe-agents.lock)
+                FILE=".github/governance/patterns/$RULE/$P"
+                if [ ! -f "$FILE" ]; then
+                  echo "::error file=$FILE::Governance file declared in lockfile but missing on disk"
+                  ERRORS=$((ERRORS + 1))
+                  continue
+                fi
+                ACTUAL=$(sha256sum "$FILE" | cut -c1-7)
+                if [ "$ACTUAL" != "$EXPECTED" ]; then
+                  echo "::error file=$FILE::Content hash mismatch — lockfile says $EXPECTED, disk has $ACTUAL. File was modified after sync."
+                  ERRORS=$((ERRORS + 1))
+                fi
+              done
+            done
+          fi
+
+          if [ $ERRORS -gt 0 ]; then
+            echo "::error::$ERRORS file(s) failed content-hash verification"
+            exit 1
+          fi
+          echo "✅ All agent, instruction, and governance file contents match lockfile-declared hashes"
+
+      # ── Inline-waiver policy enforcement (F8) ───────────────────────
+      # Walks consumer-authored source (tests/, steps/, features/) for
+      # `# nosemgrep: <rule>` directives. Each match must pass two gates:
+      #   (1) Severity gate: the suppressed rule's .severity (top-level
+      #       field in rule.yaml) must NOT be 'error' or 'critical' —
+      #       those go through governance/waivers.yaml (CODEOWNER-reviewed,
+      #       expiry-checked, schema-validated by validate-governance.yml).
+      #   (2) Expiry gate: the directive must carry `expires: YYYY-MM-DD`
+      #       with a future date.
+      # Closes the ADR-031 inline-expiry claim gap.
+      #
+      # Uses GNU `grep -rEn` (universally preinstalled on ubuntu-latest):
+      # -r recursive, -E extended regex, -n line numbers. Output is the
+      # `path:line:content` triple the while-loop parser expects.
+      # (Earlier draft used ripgrep; swapped after F8 B.1's first CI run
+      # silently returned empty matches — ripgrep is no longer reliably
+      # preinstalled on the runner image. GNU grep is portable.)
+      - name: Enforce inline-waiver policy
+        run: |
+          ERRORS=0
+          TODAY=$(date -I)
+
+          # 2>/dev/null suppresses "no such file or directory" warnings
+          # for any of tests/steps/features that don't exist on this
+          # consumer. `|| true` keeps the substitution OK both when
+          # grep finds zero matches (exit 1) and when all three dirs
+          # are absent (exit 2).
+          MATCHES=$(grep -rEn '#[[:space:]]*nosemgrep:' tests/ steps/ features/ 2>/dev/null || true)
+
+          if [ -z "$MATCHES" ]; then
+            echo "✅ No inline nosemgrep directives present"
+            exit 0
+          fi
+
+          # Use a tmpfile to accumulate errors across the loop — `while`
+          # under a pipeline runs in a subshell, so ERRORS=$((ERRORS+1))
+          # in the loop body would not survive otherwise.
+          ERR_FILE=$(mktemp)
+          echo "$MATCHES" | while IFS=: read -r FILE LINE REST; do
+            RULE_ID=$(echo "$REST" | sed -nE 's/.*nosemgrep:[[:space:]]*([a-zA-Z0-9_-]+).*/\1/p')
+            if [ -z "$RULE_ID" ]; then
+              echo "::error file=$FILE,line=$LINE::Malformed nosemgrep directive (cannot parse rule id)"
+              echo "x" >> "$ERR_FILE"
+              continue
+            fi
+
+            RULE_FILE=$(find .github/governance/patterns -name rule.yaml \
+              -exec grep -l "^id: $RULE_ID$" {} + 2>/dev/null | head -1)
+            if [ -z "$RULE_FILE" ]; then
+              echo "::error file=$FILE,line=$LINE::Unknown rule '$RULE_ID' (not found under .github/governance/patterns/)"
+              echo "x" >> "$ERR_FILE"
+              continue
+            fi
+
+            SEVERITY=$(yq -r '.severity' "$RULE_FILE")
+            if [ "$SEVERITY" = "error" ] || [ "$SEVERITY" = "critical" ]; then
+              echo "::error file=$FILE,line=$LINE::Inline nosemgrep forbidden for $SEVERITY-severity rule '$RULE_ID' — use governance/waivers.yaml instead"
+              echo "x" >> "$ERR_FILE"
+              continue
+            fi
+
+            EXPIRES=$(echo "$REST" | sed -nE 's/.*expires:[[:space:]]*([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/p')
+            if [ -z "$EXPIRES" ]; then
+              echo "::error file=$FILE,line=$LINE::Inline nosemgrep missing 'expires: <YYYY-MM-DD>' clause"
+              echo "x" >> "$ERR_FILE"
+              continue
+            fi
+            if [ "$EXPIRES" \< "$TODAY" ]; then
+              echo "::error file=$FILE,line=$LINE::Inline waiver expired (expires: $EXPIRES, today: $TODAY) — renew or remove"
+              echo "x" >> "$ERR_FILE"
+            fi
+          done
+
+          ERRORS=$(wc -l < "$ERR_FILE")
+          rm -f "$ERR_FILE"
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::$ERRORS inline-waiver policy violation(s)"
+            exit 1
+          fi
+          echo "✅ All inline waivers comply with severity-gate and expiry policy"

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WebShop — Products</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; }
+  header { background: #1a2b4a; color: #fff; padding: 12px 24px;
+           display: flex; justify-content: space-between; align-items: center; }
+  header a { color: #fff; text-decoration: none; font-weight: 600; }
+  .controls { display: flex; gap: 12px; padding: 16px 24px; }
+  input, select { padding: 8px; font-size: 14px; }
+  #product-grid { display: grid; gap: 16px; padding: 0 24px 24px;
+                  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  .product-card { background: #fff; border-radius: 8px; padding: 16px;
+                  box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .product-card h3 { margin: 0 0 4px; font-size: 15px; }
+  .category { color: #667; font-size: 12px; }
+  .price { font-weight: 700; margin: 8px 0; }
+  button { background: #1a2b4a; color: #fff; border: 0; padding: 8px 12px;
+           border-radius: 6px; cursor: pointer; }
+  #no-results { padding: 24px; color: #667; display: none; }
+</style>
+</head>
+<body>
+<header>
+  <span data-testid="shop-title">WebShop</span>
+  <a href="cart.html" data-testid="cart-link">Cart (<span data-testid="cart-count">0</span>)</a>
+</header>
+<div class="controls">
+  <input type="search" data-testid="search-input" placeholder="Search products..." />
+  <select data-testid="category-filter">
+    <option value="">All categories</option>
+    <option>Electronics</option>
+    <option>Home</option>
+    <option>Stationery</option>
+  </select>
+</div>
+<div id="product-grid" data-testid="product-grid"></div>
+<p id="no-results" data-testid="no-results">No products match your search.</p>
+<script>
+const PRODUCTS = [
+  { id: 1, name: "Wireless Mouse",           category: "Electronics", price: 24.99 },
+  { id: 2, name: "Mechanical Keyboard",      category: "Electronics", price: 89.99 },
+  { id: 3, name: "USB-C Cable",              category: "Electronics", price: 12.49 },
+  { id: 4, name: "Coffee Mug",               category: "Home",        price: 9.99 },
+  { id: 5, name: "Desk Lamp",                category: "Home",        price: 34.99 },
+  { id: 6, name: "Water Bottle",             category: "Home",        price: 18.99 },
+  { id: 7, name: "Notebook",                 category: "Stationery",  price: 4.99 },
+  { id: 8, name: "Ballpoint Pens (10-pack)", category: "Stationery",  price: 6.99 },
+];
+const grid = document.getElementById("product-grid");
+const noResults = document.getElementById("no-results");
+const searchInput = document.querySelector('[data-testid="search-input"]');
+const categoryFilter = document.querySelector('[data-testid="category-filter"]');
+
+function cart() { return JSON.parse(localStorage.getItem("cart") || "[]"); }
+function saveCart(c) { localStorage.setItem("cart", JSON.stringify(c)); renderCount(); }
+function renderCount() {
+  document.querySelector('[data-testid="cart-count"]').textContent =
+    cart().reduce((n, i) => n + i.qty, 0);
+}
+function render() {
+  const q = searchInput.value.trim().toLowerCase();
+  const cat = categoryFilter.value;
+  const visible = PRODUCTS.filter(p =>
+    p.name.toLowerCase().includes(q) && (!cat || p.category === cat));
+  grid.innerHTML = "";
+  visible.forEach(p => {
+    const card = document.createElement("div");
+    card.className = "product-card";
+    card.setAttribute("data-testid", "product-card");
+    card.innerHTML = `
+      <h3 data-testid="product-name">${p.name}</h3>
+      <div class="category" data-testid="product-category">${p.category}</div>
+      <div class="price" data-testid="product-price">$${p.price.toFixed(2)}</div>
+      <button data-testid="add-to-cart">Add to cart</button>`;
+    card.querySelector("button").addEventListener("click", () => {
+      const c = cart();
+      const item = c.find(i => i.id === p.id);
+      if (item) item.qty += 1;
+      else c.push({ id: p.id, name: p.name, price: p.price, qty: 1 });
+      saveCart(c);
+    });
+    grid.appendChild(card);
+  });
+  noResults.style.display = visible.length ? "none" : "block";
+}
+searchInput.addEventListener("input", render);
+categoryFilter.addEventListener("change", render);
+render(); renderCount();
+</script>
+</body>
+</html>

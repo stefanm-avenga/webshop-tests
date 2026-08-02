@@ -1,0 +1,16 @@
+{
+	"servers": {
+		"smartbear": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"-y",
+				"@smartbear/mcp@latest"
+			],
+			"env": {
+				"ZEPHYR_API_TOKEN": "${env:ZEPHYR_API_TOKEN}",
+				"ZEPHYR_BASE_URL": "https://prod-api.zephyr4jiracloud.com/v2"
+			}
+		}
+	}
+}

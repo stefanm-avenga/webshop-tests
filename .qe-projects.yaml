@@ -1,0 +1,15 @@
+# .qe-projects.yaml — scope manifest for the webshop-tests repo
+#
+# Maps each JIRA project label to the code subdirectory it owns. @coordinator
+# reads this, matches the ticket's `webshop` label to a scope path, and writes
+# it into .qe-active-scope.json for runtime scope enforcement.
+#
+# The BDD test assets under features/ are IN scope. The static UI mocks under
+# mock-ui/ are intentionally OUT of scope — a test-authoring agent has no
+# business editing the application under test.
+
+projects:
+  webshop:
+    path: features
+    instructions: instructions/apps/webshop/
+    governance: governance/patterns/apps/webshop/

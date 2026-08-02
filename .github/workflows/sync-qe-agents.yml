@@ -1,0 +1,515 @@
+# .github/workflows/sync-qe-agents.yml
+#
+# Syncs QE agents and instruction sets from the central repo (qe-agents-central)
+# into this app repo. Creates a PR with changes for team review.
+#
+# Trigger: weekly schedule + manual. For event-driven sync (central repo
+# pushes updates), add repository_dispatch trigger as a future enhancement —
+# requires the central repo to maintain a registry of app repos to notify.
+
+name: Sync QE Agents & Instructions
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'            # Every Monday at 9:00 UTC
+  workflow_dispatch:
+    inputs:
+      version_override:
+        description: 'Override version from .qe-agents.yaml (e.g., v1.2.0 or latest)'
+        required: false
+        default: ''
+
+# ──────────────────────────────────────────────────────────────────────
+# Authentication — GitHub App (not PATs, not GITHUB_TOKEN):
+#
+#   A dedicated GitHub App installed on the central repo and every consumer
+#   repo. Each run mints short-lived installation tokens (~1 hour) that are
+#   not tied to a person — if someone leaves, nothing breaks, and an org
+#   admin controls access centrally. Same pattern as AWS IAM roles vs access
+#   keys: temporary credentials on demand instead of long-lived secrets.
+#
+#   Two tokens are minted below, each scoped to the minimum it needs:
+#     - central_token — contents:read on the CENTRAL repo (clone only)
+#     - repo_token    — contents:write + pull-requests:write on THIS repo
+#
+#   GITHUB_TOKEN cannot be used for either: it is scoped to this repo only
+#   (so it 404s cloning a different private repo), and PRs it creates do NOT
+#   trigger downstream `pull_request` workflows like validate.yml.
+#
+#   Repo secrets required: QE_SYNC_APP_ID, QE_SYNC_PRIVATE_KEY
+# ──────────────────────────────────────────────────────────────────────
+
+env:
+  CENTRAL_REPO: qe-agents-central   # Central repo name (same org assumed)
+  SYNC_BRANCH: qe-agents-sync      # Branch name for the sync PR
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # ── 0. Mint scoped GitHub App installation tokens ─────────────
+      # Read-only token for CENTRAL (used by the clone step in 4).
+      - name: Token for central (read-only)
+        id: central_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.QE_SYNC_APP_ID }}
+          private-key: ${{ secrets.QE_SYNC_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ env.CENTRAL_REPO }}   # central repo name only
+          permission-contents: read
+
+      # Write token for THIS consumer (branch push + PR in step 12).
+      # No `repositories:` → scoped to the current repo only.
+      - name: Token for this repo (write + PR)
+        id: repo_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.QE_SYNC_APP_ID }}
+          private-key: ${{ secrets.QE_SYNC_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      # ── 1. Checkout app repo ──────────────────────────────────────
+      - name: Checkout app repo
+        uses: actions/checkout@v4
+
+      # ── 2. Install yq for YAML parsing ────────────────────────────
+      - name: Install yq
+        uses: mikefarah/yq@master
+
+      # ── 3. Parse .qe-agents.yaml ──────────────────────────────────
+      - name: Parse config
+        id: config
+        run: |
+          CONFIG=".qe-agents.yaml"
+          if [ ! -f "$CONFIG" ]; then
+            echo "::error::$CONFIG not found in repo root"
+            exit 1
+          fi
+
+          # Version: workflow input overrides config, config overrides 'latest'
+          if [ -n "${{ inputs.version_override }}" ]; then
+            VERSION="${{ inputs.version_override }}"
+          else
+            VERSION=$(yq '.version // "latest"' "$CONFIG")
+          fi
+
+          APP=$(yq '.app' "$CONFIG")
+          AGENTS=$(yq '.agents[]' "$CONFIG" | tr '\n' ' ')
+          INCLUDE_FROM=$(yq '.include_from[]' "$CONFIG" 2>/dev/null | tr '\n' '|')
+          OVERRIDES=$(yq '.agent_overrides[]' "$CONFIG" 2>/dev/null | tr '\n' ' ')
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+          echo "agents=$AGENTS" >> "$GITHUB_OUTPUT"
+          echo "include_from=$INCLUDE_FROM" >> "$GITHUB_OUTPUT"
+          echo "overrides=$OVERRIDES" >> "$GITHUB_OUTPUT"
+
+          echo "📋 Config: app=$APP version=$VERSION"
+          echo "   Agents: $AGENTS"
+          echo "   Overrides: ${OVERRIDES:-none}"
+
+      # ── 4. Fetch central repo at specified version ─────────────────
+      - name: Fetch central repo
+        run: |
+          VERSION="${{ steps.config.outputs.version }}"
+          ORG="${{ github.repository_owner }}"
+          REF="$VERSION"
+
+          # 'latest' means main branch head
+          if [ "$VERSION" = "latest" ]; then
+            REF="main"
+          fi
+
+          # The central repo is private, and GITHUB_TOKEN is scoped to THIS
+          # repo only, so cloning a different private repo 404s. central_token
+          # is a GitHub App installation token scoped to contents:read on the
+          # central repo alone (minted in step 0).
+          git clone --depth 1 --branch "$REF" \
+            "https://x-access-token:${{ steps.central_token.outputs.token }}@github.com/${ORG}/${CENTRAL_REPO}.git" \
+            _central
+
+          # Record the exact commit for the lockfile (full 40-char SHA for forensic reproducibility)
+          COMMIT=$(git -C _central rev-parse HEAD)
+          # Author date of the central commit (ISO 8601). Deterministic for a given
+          # source state — used as `source_committed_at` in the lockfile to preserve
+          # peter-evans idempotency across re-runs. See F-S2-1 in journal.
+          COMMIT_TIMESTAMP=$(git -C _central show -s --format=%aI HEAD)
+          echo "central_commit=$COMMIT" >> "$GITHUB_ENV"
+          echo "central_commit_timestamp=$COMMIT_TIMESTAMP" >> "$GITHUB_ENV"
+          echo "✅ Fetched $CENTRAL_REPO @ $REF (commit: $COMMIT, committed: $COMMIT_TIMESTAMP)"
+
+      # ── 4b. Initialize sync manifest (α.b fix, F-F4-2) ─────────────
+      # The lockfile must describe what THIS sync run cp'd from central, NOT
+      # the consumer's current disk state. Walking disk for lockfile generation
+      # silently re-claims files left over from prior syncs as belonging to
+      # the current source_commit — false forensic claim under decommission
+      # scenarios. Each sync step appends its destination paths to this
+      # manifest; Step 10 (lockfile generation) reads the manifest, not disk.
+      - name: Initialize sync manifest
+        run: |
+          MANIFEST="$RUNNER_TEMP/sync-manifest.txt"
+          : > "$MANIFEST"
+          echo "manifest_path=$MANIFEST" >> "$GITHUB_ENV"
+          echo "ℹ️  Sync manifest initialized at $MANIFEST"
+
+      # ── 5. Sync agents ────────────────────────────────────────────
+      - name: Sync agents
+        run: |
+          APP="${{ steps.config.outputs.app }}"
+          AGENTS="${{ steps.config.outputs.agents }}"
+          OVERRIDES="${{ steps.config.outputs.overrides }}"
+
+          mkdir -p .github/agents
+
+          for AGENT in $AGENTS; do
+            SOURCE="_central/agents/${AGENT}.agent.md"
+
+            # Check if this agent is overridden
+            if echo "$OVERRIDES" | grep -qw "$AGENT"; then
+              OVERRIDE="_central/instructions/apps/${APP}/${AGENT}.agent.md"
+              if [ -f "$OVERRIDE" ]; then
+                SOURCE="$OVERRIDE"
+                echo "⚠️  Agent '$AGENT' using app-specific override"
+              else
+                echo "::warning::Override declared for '$AGENT' but $OVERRIDE not found. Using universal."
+              fi
+            fi
+
+            if [ -f "$SOURCE" ]; then
+              cp "$SOURCE" ".github/agents/${AGENT}.agent.md"
+              echo ".github/agents/${AGENT}.agent.md" >> "$manifest_path"
+              echo "✅ Synced agent: $AGENT"
+            else
+              echo "::error::Agent file not found: $SOURCE"
+              exit 1
+            fi
+          done
+
+      # ── 6. Sync universal instructions (always all of them) ───────
+      # α.b: iterate from source side so the manifest captures exactly what
+      # was cp'd from central this run (not whatever's on disk).
+      - name: Sync universal instructions
+        run: |
+          BASE_DIR="_central/instructions/base"
+          mkdir -p .github/instructions/base
+
+          if [ -d "$BASE_DIR" ]; then
+            COUNT=0
+            for SOURCE in "$BASE_DIR"/*.instructions.md; do
+              [ -f "$SOURCE" ] || continue
+              NAME=$(basename "$SOURCE")
+              DEST=".github/instructions/base/$NAME"
+              cp "$SOURCE" "$DEST"
+              echo "$DEST" >> "$manifest_path"
+              COUNT=$((COUNT + 1))
+            done
+            echo "✅ Synced $COUNT universal instruction files"
+          else
+            echo "::error::Universal instruction directory not found: $BASE_DIR"
+            exit 1
+          fi
+
+      # ── 7. Sync app-specific instructions ──────────────────────────
+      - name: Sync app-specific instructions
+        run: |
+          APP="${{ steps.config.outputs.app }}"
+          APP_DIR="_central/instructions/apps/${APP}"
+
+          if [ -d "$APP_DIR" ]; then
+            # Walk recursively, preserve subfolder structure relative to APP_DIR.
+            # apps/<app>/ may be flat (<file>.instructions.md at depth 0) or
+            # nested (<project>/<file>.instructions.md). Both shapes must land
+            # at .github/instructions/apps/<app>/[subdir/]<file>.
+            #
+            # A non-recursive glob (`"$APP_DIR"/*.instructions.md`) silently
+            # skips nested subfolders, leaving .github/instructions/apps/<app>/
+            # empty on disk and absent from the synced tree — hence the
+            # recursive find below.
+            find "$APP_DIR" -type f -name '*.instructions.md' | while read SOURCE; do
+              REL="${SOURCE#$APP_DIR/}"
+              DEST=".github/instructions/apps/${APP}/$REL"
+              mkdir -p "$(dirname "$DEST")"
+              cp "$SOURCE" "$DEST"
+              echo "$DEST" >> "$manifest_path"
+            done
+
+            # Copy copilot-instructions.md if it exists (global instructions for this app)
+            if [ -f "$APP_DIR/copilot-instructions.md" ]; then
+              cp "$APP_DIR/copilot-instructions.md" .github/copilot-instructions.md
+              echo ".github/copilot-instructions.md" >> "$manifest_path"
+            fi
+
+            echo "✅ Synced app instructions: $APP"
+          else
+            echo "::warning::App folder not found: $APP_DIR"
+          fi
+
+      # ── 8. Sync borrowed instructions (include_from) ──────────────
+      - name: Sync borrowed instructions
+        run: |
+          IFS='|' read -ra INCLUDES <<< "${{ steps.config.outputs.include_from }}"
+
+          for INCLUDE in "${INCLUDES[@]}"; do
+            [ -z "$INCLUDE" ] && continue
+            INCLUDE_DIR="_central/instructions/${INCLUDE}"
+
+            if [ -d "$INCLUDE_DIR" ]; then
+              # α.b: iterate from source side; record each landed path in manifest
+              for SOURCE in "$INCLUDE_DIR"/*.instructions.md; do
+                [ -f "$SOURCE" ] || continue
+                NAME=$(basename "$SOURCE")
+                DEST=".github/instructions/$NAME"
+                cp "$SOURCE" "$DEST"
+                echo "$DEST" >> "$manifest_path"
+              done
+              echo "✅ Borrowed: $INCLUDE"
+            elif [ -f "$INCLUDE_DIR.instructions.md" ]; then
+              NAME=$(basename "$INCLUDE_DIR.instructions.md")
+              DEST=".github/instructions/$NAME"
+              cp "$INCLUDE_DIR.instructions.md" "$DEST"
+              echo "$DEST" >> "$manifest_path"
+              echo "✅ Borrowed: $INCLUDE"
+            else
+              echo "::warning::include_from path not found: $INCLUDE"
+            fi
+          done
+
+      # ── 9. Sync governance (base + this app's own rules + waivers) ─
+      - name: Sync governance
+        run: |
+          APP="${{ steps.config.outputs.app }}"
+          if [ -d "_central/governance" ]; then
+            mkdir -p .github/governance/patterns
+            # Always sync universal (base) rules
+            if [ -d "_central/governance/patterns/base" ]; then
+              cp -r _central/governance/patterns/base .github/governance/patterns/
+              # α.b: walk SOURCE side (not destination!) to record what was actually
+              # cp'd from central. Walking destination would catch stale files from
+              # prior syncs that cp -r leaves untouched (the bug α.b is here to fix).
+              find _central/governance/patterns/base -type f | while read SRC; do
+                REL="${SRC#_central/governance/patterns/base/}"
+                echo ".github/governance/patterns/base/$REL" >> "$manifest_path"
+              done
+              echo "✅ Synced governance/patterns/base"
+            fi
+            # Sync only this app's own rules (skip other apps' folders)
+            if [ -d "_central/governance/patterns/apps/$APP" ]; then
+              mkdir -p .github/governance/patterns/apps
+              cp -r "_central/governance/patterns/apps/$APP" .github/governance/patterns/apps/
+              # α.b: walk SOURCE side (see comment in base block above)
+              find "_central/governance/patterns/apps/$APP" -type f | while read SRC; do
+                REL="${SRC#_central/governance/patterns/apps/$APP/}"
+                echo ".github/governance/patterns/apps/$APP/$REL" >> "$manifest_path"
+              done
+              echo "✅ Synced governance/patterns/apps/$APP"
+            else
+              # F-F4-1 fix (Phase 3 housekeeping 2026-05-26): emit warning for
+              # missing app-specific governance, parallel to Step 7's warning
+              # for missing app-specific instructions. Symmetric signaling for
+              # the two parallel "missing app overlay" cases.
+              echo "::warning::App governance folder not found: _central/governance/patterns/apps/$APP"
+            fi
+            # Sync waiver registry (centrally owned, full file)
+            if [ -f "_central/governance/waivers.yaml" ]; then
+              cp _central/governance/waivers.yaml .github/governance/
+              echo ".github/governance/waivers.yaml" >> "$manifest_path"
+              echo "✅ Synced governance waivers"
+            fi
+          fi
+
+      # ── 9b. Generate Copilot instruction stubs from governance rules ─
+      # Bridge: project each rule's description.md + rule.yaml metadata
+      # into a Copilot-shaped instruction file under
+      # .github/instructions/governance/, so the agent loads the rule
+      # at generation time via Copilot's applyTo resolver.
+      - name: Generate governance instruction stubs
+        run: |
+          STUB_DIR=".github/instructions/governance"
+          mkdir -p "$STUB_DIR"
+          # α.b: iterate rule.yaml files THIS sync run cp'd (from manifest), NOT
+          # whatever's on disk. Disk may include rules from prior syncs that the
+          # current source_commit has decommissioned; generating stubs for those
+          # would re-claim them as belonging to the current sync. See F-F4-2.
+          #
+          # rule.yaml is FLAT top-level (id, severity, paths, metadata, ...) — not
+          # wrapped in a .rules[] array. (semgrep.yaml IS .rules[]-wrapped; rule.yaml
+          # is the metadata sidecar with a different shape. Conflating the two
+          # schemas was the root cause of finding F-S4-1.)
+          grep -E '/patterns/.*/rule\.yaml$' "$manifest_path" | while read RULE; do
+            RULE_DIR=$(dirname "$RULE")
+            RULE_ID=$(basename "$RULE_DIR")
+            DESC="$RULE_DIR/description.md"
+            [ -f "$DESC" ] || continue
+
+            # Extract relevant fields from rule.yaml using yq.
+            APPLY_TO=$(yq '.paths.include[0]' "$RULE")
+            SEVERITY=$(yq '.severity' "$RULE")
+            OWNER=$(yq '.metadata.owner' "$RULE")
+            STATE=$(yq '.metadata.state' "$RULE")
+
+            # Project into a Copilot instruction file
+            cat > "$STUB_DIR/$RULE_ID.instructions.md" <<EOF
+          ---
+          applyTo: "$APPLY_TO"
+          ---
+          # Governance rule: $RULE_ID
+
+          # Auto-generated by sync-qe-agents — do not edit manually.
+          # Edit the source of truth: $RULE_DIR/description.md
+
+          **Severity:** $SEVERITY · **Owner:** $OWNER · **State:** $STATE
+
+          $(cat "$DESC")
+
+          ---
+          *Enforced by Semgrep at PR time. Violations block merge.*
+          EOF
+            # Record the generated stub in manifest so lockfile picks it up
+            echo "$STUB_DIR/$RULE_ID.instructions.md" >> "$manifest_path"
+
+            echo "✅ Generated stub: $RULE_ID.instructions.md (applyTo: $APPLY_TO)"
+          done
+
+      # ── 10. Generate lockfile (α.b: from manifest, NOT disk walk) ──
+      # The lockfile is the forensic ground-truth artifact of THIS sync run:
+      # every entry must correspond to a file actually cp'd from central at
+      # source_commit. Walking the consumer's disk state silently re-claims
+      # carryover files from prior syncs — falsifying the audit trail under
+      # decommission scenarios. See finding F-F4-2 in journal.
+      - name: Generate lockfile
+        run: |
+          VERSION="${{ steps.config.outputs.version }}"
+          APP="${{ steps.config.outputs.app }}"
+          COMMIT="$central_commit"
+          MANIFEST="$manifest_path"
+
+          # Start lockfile
+          cat > .qe-agents.lock << LOCKEOF
+          # Auto-generated by sync-qe-agents workflow — do not edit manually
+          source_repo: ${{ github.repository_owner }}/$CENTRAL_REPO
+          source_version: $VERSION
+          source_commit: $COMMIT
+          source_committed_at: $central_commit_timestamp
+          agents:
+          LOCKEOF
+
+          # Add agent entries from manifest (agents live flat under .github/agents/)
+          grep -E '^\.github/agents/.*\.agent\.md$' "$MANIFEST" | sort -u | while read FILE; do
+            [ -f "$FILE" ] || continue
+            NAME=$(basename "$FILE")
+            SHA=$(sha256sum "$FILE" | cut -c1-7)
+            echo "  - name: $NAME" >> .qe-agents.lock
+            echo "    sha: $SHA" >> .qe-agents.lock
+          done
+
+          # Add instruction entries from manifest (base/, apps/<app>/, generated
+          # governance stubs, borrowed flat files — all live under .github/instructions/)
+          echo "instructions:" >> .qe-agents.lock
+          grep -E '^\.github/instructions/.*\.instructions\.md$' "$MANIFEST" | sort -u | while read FILE; do
+            [ -f "$FILE" ] || continue
+            RELPATH="${FILE#.github/instructions/}"
+            SHA=$(sha256sum "$FILE" | cut -c1-7)
+            echo "  - path: $RELPATH" >> .qe-agents.lock
+            echo "    sha: $SHA" >> .qe-agents.lock
+          done
+
+          # Add include_from entries (declarations from config, not files)
+          echo "include_from:" >> .qe-agents.lock
+          IFS='|' read -ra INCLUDES <<< "${{ steps.config.outputs.include_from }}"
+          for INCLUDE in "${INCLUDES[@]}"; do
+            [ -z "$INCLUDE" ] && continue
+            echo "  - source: $INCLUDE" >> .qe-agents.lock
+          done
+
+          # Add governance entries from manifest — Option 3 (per-file manifest).
+          # Each rule entry carries a files:[] array listing every file inside the
+          # rule directory (rule.yaml, description.md, semgrep.yaml, examples/*).
+          # This mirrors agents[] and instructions[] — one uniform hash-family
+          # across all sync-managed content, one error template, one mental model.
+          echo "governance:" >> .qe-agents.lock
+          grep -E '^\.github/governance/patterns/.*/rule\.yaml$' "$MANIFEST" | sort -u | while read RULE; do
+            [ -f "$RULE" ] || continue
+            RULE_DIR=$(dirname "$RULE")
+            RELPATH="${RULE_DIR#.github/governance/patterns/}"
+            echo "  - rule: $RELPATH" >> .qe-agents.lock
+            echo "    files:" >> .qe-agents.lock
+            # All manifest entries under this rule directory, paths relative to RULE_DIR.
+            # awk index($0, prefix) == 1 is the regex-safe equivalent of `^${RULE_DIR}/`
+            # — manifest paths contain dots which would otherwise need regex escaping.
+            awk -v prefix="${RULE_DIR}/" 'index($0, prefix) == 1' "$MANIFEST" | sort -u | while read FILE; do
+              [ -f "$FILE" ] || continue
+              REL_TO_RULE="${FILE#${RULE_DIR}/}"
+              SHA=$(sha256sum "$FILE" | cut -c1-7)
+              echo "      - path: $REL_TO_RULE" >> .qe-agents.lock
+              echo "        sha: $SHA" >> .qe-agents.lock
+            done
+          done
+
+          # Track waivers.yaml as a top-level field (only if synced this run)
+          if grep -qxF '.github/governance/waivers.yaml' "$MANIFEST"; then
+            WAIVERS_SHA=$(sha256sum .github/governance/waivers.yaml | cut -c1-7)
+            echo "waivers_sha: $WAIVERS_SHA" >> .qe-agents.lock
+          fi
+
+          # Add overrides (declarations from config)
+          echo "agent_overrides:" >> .qe-agents.lock
+          OVERRIDES="${{ steps.config.outputs.overrides }}"
+          if [ -n "$OVERRIDES" ]; then
+            for OVR in $OVERRIDES; do
+              echo "  - $OVR" >> .qe-agents.lock
+            done
+          else
+            echo "  []" >> .qe-agents.lock
+          fi
+
+          # Clean up indentation (heredoc adds leading spaces)
+          sed -i 's/^          //' .qe-agents.lock
+
+          echo "✅ Generated .qe-agents.lock from sync manifest"
+          cat .qe-agents.lock
+
+      # ── 11. Cleanup ────────────────────────────────────────────────
+      - name: Cleanup central repo clone
+        run: rm -rf _central
+
+      # ── 12. Create PR if changes exist ─────────────────────────────
+      # Token note: uses repo_token (App installation token scoped to this
+      # repo with contents:write + pull-requests:write) instead of
+      # GITHUB_TOKEN. Required because PRs created by GITHUB_TOKEN do NOT
+      # trigger downstream `pull_request` workflows like validate.yml — a
+      # platform safety mechanism against recursive workflow triggers. Since
+      # branch protection requires validate to pass before merge, peter-evans
+      # MUST use a non-GITHUB_TOKEN identity so its PR fires validate.yml.
+      # An App token satisfies this, and authors the PR as <app-slug>[bot].
+      - name: Create sync PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ steps.repo_token.outputs.token }}
+          branch: ${{ env.SYNC_BRANCH }}
+          delete-branch: true
+          title: "chore: sync QE agents from ${{ env.CENTRAL_REPO }} @ ${{ steps.config.outputs.version }}"
+          body: |
+            ## QE Agent Sync
+
+            **Source:** `${{ env.CENTRAL_REPO }}` @ `${{ steps.config.outputs.version }}` (commit: `${{ env.central_commit }}`)
+            **App:** `${{ steps.config.outputs.app }}`
+
+            ### What changed
+            Review the file diff below. This PR was auto-generated by the sync workflow.
+
+            ### Agents synced
+            `${{ steps.config.outputs.agents }}`
+
+            ### Overrides
+            `${{ steps.config.outputs.overrides || 'none' }}`
+
+            ---
+            Auto-generated by `sync-qe-agents.yml`. Review before merging.
+          commit-message: "chore: sync QE agents from ${{ env.CENTRAL_REPO }} @ ${{ steps.config.outputs.version }}"
+          labels: qe-agents-sync

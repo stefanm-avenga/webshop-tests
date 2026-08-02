@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WebShop — Cart</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; }
+  header { background: #1a2b4a; color: #fff; padding: 12px 24px;
+           display: flex; justify-content: space-between; align-items: center; }
+  header a { color: #fff; text-decoration: none; font-weight: 600; }
+  #cart-items { padding: 16px 24px; }
+  .cart-row { background: #fff; border-radius: 8px; padding: 12px 16px;
+              margin-bottom: 8px; display: flex; gap: 16px; align-items: center;
+              box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .cart-row .name { flex: 1; }
+  #summary { padding: 0 24px 24px; }
+  #shipping-banner { background: #e6f6ea; color: #1a6b34; padding: 10px 14px;
+                     border-radius: 6px; margin-bottom: 10px; display: none; }
+  #empty-cart { padding: 24px; color: #667; display: none; }
+  button { background: #b33; color: #fff; border: 0; padding: 6px 10px;
+           border-radius: 6px; cursor: pointer; }
+</style>
+</head>
+<body>
+<header>
+  <a href="products.html" data-testid="back-link">&larr; Continue shopping</a>
+  <span data-testid="shop-title">WebShop</span>
+</header>
+<div id="cart-items"></div>
+<p id="empty-cart" data-testid="empty-cart">Your cart is empty.</p>
+<div id="summary">
+  <div id="shipping-banner" data-testid="shipping-banner">You qualify for free shipping!</div>
+  <strong>Total: <span data-testid="cart-total">$0.00</span></strong>
+</div>
+<script>
+function cart() { return JSON.parse(localStorage.getItem("cart") || "[]"); }
+function saveCart(c) { localStorage.setItem("cart", JSON.stringify(c)); render(); }
+function render() {
+  const c = cart();
+  const wrap = document.getElementById("cart-items");
+  wrap.innerHTML = "";
+  c.forEach(item => {
+    const row = document.createElement("div");
+    row.className = "cart-row";
+    row.setAttribute("data-testid", "cart-item");
+    row.innerHTML = `
+      <span class="name" data-testid="cart-item-name">${item.name}</span>
+      <span data-testid="cart-item-qty">×${item.qty}</span>
+      <span data-testid="cart-item-price">$${(item.price * item.qty).toFixed(2)}</span>
+      <button data-testid="remove-item">Remove</button>`;
+    row.querySelector("button").addEventListener("click", () =>
+      saveCart(cart().filter(i => i.id !== item.id)));
+    wrap.appendChild(row);
+  });
+  const total = c.reduce((s, i) => s + i.price * i.qty, 0);
+  document.querySelector('[data-testid="cart-total"]').textContent = `$${total.toFixed(2)}`;
+  document.getElementById("shipping-banner").style.display = total >= 50 ? "block" : "none";
+  document.getElementById("empty-cart").style.display = c.length ? "none" : "block";
+}
+render();
+</script>
+</body>
+</html>

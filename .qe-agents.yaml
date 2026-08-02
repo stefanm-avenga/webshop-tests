@@ -1,0 +1,8 @@
+app: webshop
+version: v1.0.0
+agents:
+  - coordinator
+  - coder
+  - reviewer
+  - analyst
+  - healer

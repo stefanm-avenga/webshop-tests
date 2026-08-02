@@ -1,5 +1,5 @@
 ---
-applyTo: "steps/api/**/*.py"
+applyTo: "features/**/*.py"
 ---
 # Governance rule: api-typed-clients-only
 

@@ -1,0 +1,17 @@
+id: api-typed-clients-only
+description_path: description.md
+semgrep_path: semgrep.yaml
+severity: error
+languages: [python]
+paths:
+  include: ["steps/api/**/*.py"]
+  exclude: ["clients/**"]
+metadata:
+  owner: qe-platform-team
+  state: enforced
+  created: 2026-05-22
+  last_reviewed: 2026-05-22
+  review_cadence: 365d
+  related_policy: null
+  supersedes: null
+  superseded_by: null

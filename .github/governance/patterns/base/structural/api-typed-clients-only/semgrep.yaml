@@ -1,0 +1,13 @@
+rules:
+  - id: api-typed-clients-only
+    languages: [python]
+    pattern-either:
+      - pattern: requests.get(...)
+      - pattern: requests.post(...)
+      - pattern: requests.put(...)
+      - pattern: requests.delete(...)
+      - pattern: requests.patch(...)
+    message: |
+      API step definitions must use the typed PyAutocore client classes, not raw requests calls.
+      See: governance/patterns/base/structural/api-typed-clients-only/description.md
+    severity: ERROR

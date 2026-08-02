@@ -1,0 +1,37 @@
+# ui-no-raw-selectors
+
+**Rule ID:** `ui-no-raw-selectors`
+**Severity:** error · **State:** enforced · **Owner:** qe-platform-team
+
+All UI step definitions must use page objects (e.g. `LoginPage(page).sign_in(user)`).
+Raw selectors like `page.locator('#email')` are not permitted in UI step
+definitions — they belong only inside `pages/` classes, where selector
+changes ripple to one place, not every test.
+
+## Why
+
+Test failures from UI selector drift are the most common kind of test-suite rot at scale. Centralizing every Playwright selector inside the page-object layer means that when a UI element's locator changes, one file changes and every test that exercises that element keeps working. If raw selectors are allowed in step files, every step using that selector breaks independently, and there is no single point of repair.
+
+## What this rule catches
+
+Any call to `page.locator(...)` (or the equivalent `page.get_by_*` family) appearing in a Python file under `steps/ui/`. Inside `pages/`, the same calls are not just permitted but expected.
+
+## How to comply
+
+Move the selector into a method on the relevant page object class under `pages/<app>/`. Expose a semantic operation (`sign_in`, `submit_order`) and call that from the step definition.
+
+```python
+# Step file (compliant):
+def step_sign_in(context):
+    LoginPage(context.page).sign_in(context.user)
+
+# Page object (also compliant — this is where the selector lives):
+class LoginPage:
+    def sign_in(self, user):
+        self.page.locator('[data-testid="email"]').fill(user.email)
+        self.page.locator('[data-testid="submit"]').click()
+```
+
+## Override
+
+If a third-party iframe or other genuinely page-object-unwrappable element forces a raw selector in a step file, use an inline `nosemgrep: ui-no-raw-selectors` annotation with a reason and expiry, OR add a path-scoped waiver to `governance/waivers.yaml`. See proposal §"Override Model."

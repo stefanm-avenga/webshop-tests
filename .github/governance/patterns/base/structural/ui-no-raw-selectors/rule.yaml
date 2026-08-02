@@ -1,0 +1,17 @@
+id: ui-no-raw-selectors
+description_path: description.md
+semgrep_path: semgrep.yaml
+severity: error
+languages: [python]
+paths:
+  include: ["steps/ui/**/*.py"]
+  exclude: ["pages/**"]
+metadata:
+  owner: qe-platform-team
+  state: enforced
+  created: 2026-04-30
+  last_reviewed: 2026-05-19
+  review_cadence: 365d
+  related_policy: null
+  supersedes: null
+  superseded_by: null

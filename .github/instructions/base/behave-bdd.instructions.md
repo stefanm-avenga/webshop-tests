@@ -1,5 +1,5 @@
 ---
-applyTo: "features/**/*.feature"
+applyTo: '**'
 ---
 # Gherkin authoring — Behave conventions
 

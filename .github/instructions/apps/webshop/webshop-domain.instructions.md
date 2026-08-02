@@ -1,5 +1,5 @@
 ---
-applyTo: "features/**"
+applyTo: '**'
 ---
 
 # WebShop — Domain Knowledge

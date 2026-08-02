@@ -1,15 +1,18 @@
-# .qe-projects.yaml — scope manifest for the webshop-tests repo
+# .qe-projects.yaml — project registry for this repo
 #
-# Maps each JIRA project label to the code subdirectory it owns. @coordinator
-# reads this, matches the ticket's `webshop` label to a scope path, and writes
-# it into .qe-active-scope.json for runtime scope enforcement.
+# Pure registry: for each project this repo hosts, where the project lives and
+# where its instruction overlays and governance rules are. Nothing else — the
+# per-ticket working scope is NOT defined here. @coordinator derives it at
+# dispatch time (project tree filtered by ticket relevance: a UI ticket needs
+# test assets + the app surface under test, not database or API internals) and
+# writes it to .qe-active-scope.json, which the scope-enforcement hook
+# enforces at runtime.
 #
-# The BDD test assets under features/ are IN scope. The static UI mocks under
-# mock-ui/ are intentionally OUT of scope — a test-authoring agent has no
-# business editing the application under test.
+# A repo may host several projects (e.g. apps/projectX, apps/projectY), each
+# with its own overlays. This repo hosts one: webshop spans the whole repo.
 
 projects:
   webshop:
-    path: features
+    path: .
     instructions: instructions/apps/webshop/
     governance: governance/patterns/apps/webshop/

@@ -4,8 +4,13 @@ BDD test repo for the WebShop application. QE agents, instruction sets, and
 governance rules are synced from `qe-agents-central` into `.github/` via PR —
 see `.qe-agents.yaml` for what this repo consumes.
 
+Repo layout:
+
 - `features/` — Behave features + step definitions (Playwright under the hood)
 - `mock-ui/` — static WebShop pages the tests run against
+- `db/` — WebShop relational schema + inventory data access (application internals)
+- `mock-api/` — order-service endpoint stubs (application internals)
+- `.github/` — agents, instructions, governance rules, and hooks synced from qe-agents-central
 - Run tests:
   ```
   python -m venv .venv

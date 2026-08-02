@@ -4,6 +4,7 @@ description: Generates BDD scenarios and Python test code targeting the standard
 tools:
   - github
   - atlassian
+  - smartbear
 model: ['Claude Opus 4.7', 'Claude Sonnet 4.6', 'GPT-5.2']
 ---
 

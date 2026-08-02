@@ -2,8 +2,10 @@ rules:
   - id: ui-no-raw-selectors
     languages: [python]
     patterns:
-      - pattern: page.locator($X)
+      - pattern: $P.locator($X)
     message: |
-      UI step definitions must use page objects, not raw selectors.
+      UI step definitions must not use raw CSS/XPath selectors. Use
+      `get_by_test_id` (preferred) or `get_by_role`. Where the repository has a
+      page-object layer, call that instead of driving the page directly.
       See: governance/patterns/base/structural/ui-no-raw-selectors/description.md
     severity: ERROR

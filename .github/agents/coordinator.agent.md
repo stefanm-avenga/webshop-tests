@@ -53,7 +53,12 @@ replies.
 **Stage 1 — scenarios.** Delegate to `@analyst` to propose BDD scenarios from the
 acceptance criteria. `@analyst` writes `.feature` files only and presents them in chat.
 
-**Stage 2 — HUMAN GATE 1: scenario approval.** End your turn with exactly this block
+**Stage 2 — HUMAN GATE 1: scenario approval.** Before emitting the gate block,
+**verify the proposal exists**: read the `.feature` file(s) `@analyst` reported under
+the scope path. If they are missing or empty, do not run the gate — re-delegate to
+`@analyst` with the instruction to write the files (this does not count against the
+5 revision rounds). Never ask the human to approve scenarios that exist only in chat.
+Once verified, end your turn with exactly this block
 (fill in `{KEY}`):
 
 ```

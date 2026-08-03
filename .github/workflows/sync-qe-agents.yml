@@ -512,6 +512,121 @@ jobs:
       - name: Cleanup central repo clone
         run: rm -rf _central
 
+      # ── 11b. Generate rich PR body ─────────────────────────────────
+      # Classifies every manifest file against git status (new / modified /
+      # unchanged), then renders: source header, category table, per-category
+      # listings, and a collapsible full manifest. Written to runner temp —
+      # OUTSIDE the repo tree — so peter-evans never commits it.
+      - name: Generate PR body
+        run: |
+          APP="${{ steps.config.outputs.app }}"
+          VERSION="${{ steps.config.outputs.version }}"
+          AGENTS="${{ steps.config.outputs.agents }}"
+          OVERRIDES="${{ steps.config.outputs.overrides }}"
+          BODY="$RUNNER_TEMP/pr-body.md"
+          M="$RUNNER_TEMP/manifest-sorted.txt"
+          sort -u "$manifest_path" > "$M"
+
+          # ---- classify each manifest file against the working tree ----
+          STATUS="$RUNNER_TEMP/status.txt"
+          git status --porcelain --untracked-files=all > "$STATUS"
+          NEW_L="$RUNNER_TEMP/new.txt"; MOD_L="$RUNNER_TEMP/mod.txt"; UNCH_L="$RUNNER_TEMP/unch.txt"
+          : > "$NEW_L"; : > "$MOD_L"; : > "$UNCH_L"
+          while read -r FILE; do
+            [ -n "$FILE" ] || continue
+            CODE=$(awk -v f="$FILE" 'substr($0,4)==f {print substr($0,1,2); exit}' "$STATUS")
+            if [ -z "$CODE" ]; then
+              echo "$FILE" >> "$UNCH_L"
+            elif [ "$CODE" = "??" ]; then
+              echo "$FILE" >> "$NEW_L"
+            else
+              echo "$FILE" >> "$MOD_L"
+            fi
+          done < "$M"
+          TOTAL=$(wc -l < "$M"); NEW_N=$(wc -l < "$NEW_L"); MOD_N=$(wc -l < "$MOD_L"); UNCH_N=$(wc -l < "$UNCH_L")
+
+          # ---- category splits (paths relative to repo root) ----
+          AGENT_N=$(grep -c '^\.github/agents/' "$M" || true)
+          BASE_I="$RUNNER_TEMP/i-base.txt"; APP_I="$RUNNER_TEMP/i-app.txt"; STUB_I="$RUNNER_TEMP/i-stub.txt"
+          grep -E '^\.github/(instructions/base/|copilot-instructions\.md)' "$M" | sed 's|^\.github/instructions/base/||; s|^\.github/||' > "$BASE_I" || true
+          grep "^\.github/instructions/apps/$APP/" "$M" | sed "s|^\.github/instructions/apps/$APP/||" > "$APP_I" || true
+          grep '^\.github/instructions/governance/' "$M" | sed 's|^\.github/instructions/governance/||' > "$STUB_I" || true
+          INSTR_N=$(( $(wc -l < "$BASE_I") + $(wc -l < "$APP_I") + $(wc -l < "$STUB_I") ))
+          RULES_L="$RUNNER_TEMP/rules.txt"
+          grep '/rule\.yaml$' "$M" | sed 's|^\.github/governance/patterns/||; s|/rule\.yaml$||' > "$RULES_L" || true
+          GOV_RULES=$(wc -l < "$RULES_L"); GOV_FILES=$(grep -c '^\.github/governance/' "$M" || true)
+          HOOKS_L="$RUNNER_TEMP/hooks.txt"
+          grep '^\.github/hooks/' "$M" | sed 's|^\.github/hooks/||' > "$HOOKS_L" || true
+          HOOK_FILES=$(wc -l < "$HOOKS_L")
+          HOOK_UNITS=$(sed 's|\.json$||; s|/.*||' "$HOOKS_L" | sort -u | wc -l)
+
+          numbered() {  # numbered markdown list of `code` items from a file
+            local i=0 P
+            while read -r P; do
+              [ -n "$P" ] || continue
+              i=$((i+1)); printf '%s. `%s`\n' "$i" "$P"
+            done < "$1"
+          }
+
+          # ---- render ----
+          {
+            echo "## QE Agent Sync"
+            echo
+            echo "**Source:** \`$CENTRAL_REPO\` @ \`$VERSION\` (commit: \`$central_commit\`)"
+            echo "**App:** \`$APP\`"
+            echo
+            echo "### What is synced from central"
+            echo
+            echo "Total files: $TOTAL ($NEW_N new, $MOD_N modified, $UNCH_N unchanged)"
+            echo
+            echo "| Category | Count | Files |"
+            echo "|---|---|---|"
+            echo "| Agents | $AGENT_N | $AGENT_N |"
+            echo "| Instructions | $INSTR_N | $INSTR_N |"
+            echo "| Governance rules | $GOV_RULES | $GOV_FILES |"
+            echo "| Hooks (runtime) | $HOOK_UNITS | $HOOK_FILES |"
+            echo
+            echo "### Agents"
+            echo
+            i=0; for A in $AGENTS; do i=$((i+1)); printf '%s. `%s`\n' "$i" "$A"; done
+            echo
+            echo "### Instructions"
+            echo
+            if [ -s "$BASE_I" ]; then echo "**Base:**"; echo; numbered "$BASE_I"; echo; fi
+            if [ -s "$APP_I" ]; then echo "**App (\`$APP\`):**"; echo; numbered "$APP_I"; echo; fi
+            if [ -s "$STUB_I" ]; then echo "**Governance stubs:**"; echo; numbered "$STUB_I"; echo; fi
+            if [ -s "$RULES_L" ]; then
+              echo "### Governance rules"; echo; numbered "$RULES_L"; echo
+            fi
+            if [ -s "$HOOKS_L" ]; then
+              echo "### Hooks (runtime)"; echo; numbered "$HOOKS_L"; echo
+            fi
+            if [ -n "${OVERRIDES// /}" ]; then
+              echo "### Overrides"; echo
+              for O in $OVERRIDES; do printf -- '- `%s`\n' "$O"; done
+              echo
+            fi
+            echo "<details>"
+            echo "<summary><b>Full manifest</b></summary>"
+            echo
+            echo '```'
+            echo "New ($NEW_N):"
+            sed 's/^/  /' "$NEW_L"
+            echo
+            echo "Modified ($MOD_N):"
+            sed 's/^/  /' "$MOD_L"
+            echo
+            echo "Unchanged ($UNCH_N):"
+            sed 's/^/  /' "$UNCH_L"
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+            echo "---"
+            echo "Auto-generated by \`sync-qe-agents.yml\`. Review the file diff before merging."
+          } > "$BODY"
+          echo "✅ PR body generated ($(wc -l < "$BODY") lines)"
+
       # ── 12. Create PR if changes exist ─────────────────────────────
       # Token note: uses repo_token (App installation token scoped to this
       # repo with contents:write + pull-requests:write) instead of
@@ -528,22 +643,8 @@ jobs:
           branch: ${{ env.SYNC_BRANCH }}
           delete-branch: true
           title: "chore: sync QE agents from ${{ env.CENTRAL_REPO }} @ ${{ steps.config.outputs.version }}"
-          body: |
-            ## QE Agent Sync
-
-            **Source:** `${{ env.CENTRAL_REPO }}` @ `${{ steps.config.outputs.version }}` (commit: `${{ env.central_commit }}`)
-            **App:** `${{ steps.config.outputs.app }}`
-
-            ### What changed
-            Review the file diff below. This PR was auto-generated by the sync workflow.
-
-            ### Agents synced
-            `${{ steps.config.outputs.agents }}`
-
-            ### Overrides
-            `${{ steps.config.outputs.overrides || 'none' }}`
-
-            ---
-            Auto-generated by `sync-qe-agents.yml`. Review before merging.
+          # Rich body rendered by step 11b (category table + listings +
+          # collapsible full manifest); body-path takes precedence over body.
+          body-path: ${{ runner.temp }}/pr-body.md
           commit-message: "chore: sync QE agents from ${{ env.CENTRAL_REPO }} @ ${{ steps.config.outputs.version }}"
           labels: qe-agents-sync

@@ -27,6 +27,12 @@ When `@coordinator` invokes you for test creation:
 5. **Present the scenarios to the human in chat**, as readable Gherkin, with a one-line rationale for each supplementary scenario.
 6. Post your JIRA audit comment (schema below), then return control to `@coordinator` with status `awaiting-scenario-approval`.
 
+Your Phase A turn is **not complete** until both exist: (a) the `.feature` file(s)
+written **on disk** under the scope path, and (b) the full Gherkin presented in chat.
+Returning `awaiting-scenario-approval` with scenarios that exist only in your chat
+message — or only in your head — is a protocol violation: the coordinator will verify
+the files and send the work back.
+
 ## Phase B — revise on feedback
 
 When `@coordinator` re-invokes you with human change requests:

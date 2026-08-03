@@ -3,15 +3,16 @@
 # Syncs QE agents and instruction sets from the central repo (qe-agents-central)
 # into this app repo. Creates a PR with changes for team review.
 #
-# Trigger: weekly schedule + manual. For event-driven sync (central repo
-# pushes updates), add repository_dispatch trigger as a future enhancement —
-# requires the central repo to maintain a registry of app repos to notify.
+# Trigger: event-driven + manual. Central's notify-consumers workflow sends a
+# repository_dispatch (type: qe-agents-release) on every version tag push,
+# carrying the tag in client_payload.version. Manual dispatch remains for
+# re-runs and version pinning.
 
 name: Sync QE Agents & Instructions
 
 on:
-  schedule:
-    - cron: '0 9 * * 1'            # Every Monday at 9:00 UTC
+  repository_dispatch:
+    types: [qe-agents-release]
   workflow_dispatch:
     inputs:
       version_override:
@@ -92,9 +93,11 @@ jobs:
             exit 1
           fi
 
-          # Version: workflow input overrides config, config overrides 'latest'
+          # Version: workflow input > dispatch payload > config > 'latest'
           if [ -n "${{ inputs.version_override }}" ]; then
             VERSION="${{ inputs.version_override }}"
+          elif [ -n "${{ github.event.client_payload.version }}" ]; then
+            VERSION="${{ github.event.client_payload.version }}"
           else
             VERSION=$(yq '.version // "latest"' "$CONFIG")
           fi

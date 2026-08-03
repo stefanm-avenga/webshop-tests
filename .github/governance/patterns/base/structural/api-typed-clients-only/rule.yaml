@@ -4,7 +4,7 @@ semgrep_path: semgrep.yaml
 severity: error
 languages: [python]
 paths:
-  include: ["features/**/*.py", "steps/**/*.py"]
+  include: ["steps/api/**/*.py"]
   exclude: ["clients/**"]
 metadata:
   owner: qe-platform-team

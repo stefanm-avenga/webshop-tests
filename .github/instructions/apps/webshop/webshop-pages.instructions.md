@@ -1,5 +1,5 @@
 ---
-applyTo: '**'
+applyTo: "features/**"
 ---
 
 # WebShop — Pages & Locators
@@ -39,28 +39,8 @@ forbidden by governance rule `ui-no-raw-selectors`.
 | Empty-cart message | `empty-cart` |
 | Back to products link | `back-link` |
 
-## Repo layout — authoritative for this app
-
-This repo uses a **flat Behave layout with no page-object layer**. Match it exactly:
-
-```
-features/                     .feature files live here (flat — no ui/api/db split)
-features/steps/               step definitions, one module per feature
-features/environment.py       Behave hooks: static server + Playwright lifecycle
-mock-ui/                      the application under test — OUT OF SCOPE, never edit
-```
-
-- New feature → `features/<name>.feature`; its steps → `features/steps/<name>_steps.py`.
-- There are **no page objects, no typed API clients, and no data factories** in this
-  repo. Do not create them, and do not import a test-framework base class — none exists.
-- Drive Playwright directly from step definitions via `context.page`, using
-  `get_by_test_id` with the IDs in the tables above. That is the correct pattern here.
-- Follow the style of the existing `features/steps/product_listing_steps.py`.
-
 ## Harness
 
 - `features/environment.py` starts the static server and Playwright; each
   scenario gets a fresh `context.page` already wired to `context.base_url`.
 - Run: `behave` from the repo root. `HEADED=1 behave` to watch the browser.
-- `behave` and `playwright` are installed in `.venv` only; `.vscode/settings.json`
-  pins that interpreter so VS Code terminals activate it automatically.

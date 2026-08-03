@@ -3,7 +3,7 @@
 **Rule ID:** `api-typed-clients-only`
 **Severity:** error · **State:** enforced · **Owner:** qe-platform-team
 
-All API step definitions must call typed API client classes
+All API step definitions must call typed PyAutocore client classes
 (e.g. `PortfolioClient(context.client).get_holdings(portfolio_id)`).
 Raw `requests.get(...)` / `requests.post(...)` / `requests.put(...)` /
 `requests.delete(...)` / `requests.patch(...)` calls are not permitted in
@@ -42,7 +42,7 @@ Move the HTTP call into a method on the relevant typed client under
 `clients/<app>/`. Expose a semantic operation (`get_holdings`,
 `submit_order`) and call that from the step definition. Authentication,
 retry, base-URL, and timeout handling should be set up once in the
-client's `__init__` or the base client class it extends.
+client's `__init__` or the PyAutocore `BaseClient` it extends.
 
 ```python
 # Step file (compliant):

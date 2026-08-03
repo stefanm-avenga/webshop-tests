@@ -1,5 +1,5 @@
 ---
-applyTo: '**'
+applyTo: "features/**"
 ---
 
 # WebShop — Domain Knowledge
@@ -27,7 +27,6 @@ category filtering, and a shopping cart.
 - Orders of **$50.00 or more qualify for free shipping** — the cart page shows
   a free-shipping banner at or above that threshold.
 - Removing the last item shows the empty-cart message.
-- The cart persists across page reloads (browser localStorage).
 
 ## Test data conventions
 

@@ -1,4 +1,4 @@
-"""Compliant example - uses typed API client, no raw requests in step files."""
+"""Compliant example - uses typed PyAutocore client, no raw requests in step files."""
 from clients.webshop.product_client import ProductClient
 from clients.webshop.cart_client import CartClient
 

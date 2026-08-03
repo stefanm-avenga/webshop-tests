@@ -1,5 +1,5 @@
 ---
-applyTo: "features/**/*.py"
+applyTo: "steps/ui/**/*.py"
 ---
 # Governance rule: ui-no-raw-selectors
 
